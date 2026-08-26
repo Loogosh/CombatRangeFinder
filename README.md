@@ -1,4 +1,4 @@
-# Combat Range Finder 1.3.0
+# Combat Range Finder 1.3.1
 Indicators for melee and caster spell range
 ---
 Requires [SuperWoW.dll](https://github.com/balakethelock/SuperWoW) and `VanillaUtils.dll`  

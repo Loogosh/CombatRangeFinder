@@ -39,6 +39,7 @@ local UnitClassification = UnitClassification
 local UnitIsPlayer       = UnitIsPlayer
 local UnitCanAttack      = UnitCanAttack
 local UnitRace           = UnitRace
+local UnitClass          = UnitClass
 
 -- Table and string library functions
 local pairs              = pairs
@@ -46,6 +47,14 @@ local ipairs             = ipairs
 local getn               = getn            -- For WoW 1.12, using getn is common
 
 local settings
+local isHunter = false
+
+local function RefreshPlayerClass()
+  local className, classToken = UnitClass("player")
+  isHunter = classToken == "HUNTER"
+    or className == "Hunter"
+    or className == "Охотник"
+end
 
 if not (has_vanillautils and has_superwow) then
   StaticPopupDialogs["NO_SWOW_VU"] = {
@@ -467,6 +476,7 @@ function crfFrame:ADDON_LOADED(addon)
   CRFDB.units = CRFDB.units or {}
 
   MakeSlash()
+  RefreshPlayerClass()
   crf_print("|cff77ff00Combat Range Finder|r loaded: |cffffff00/crf|r")
 
   -- RingsDB = RingsDB or {}
@@ -487,7 +497,11 @@ function crfFrame:ADDON_LOADED(addon)
   playerdot1.text:Hide()
   playerdot1.icon:Hide()
   playerdot1:Hide()
-  -- playerdot1.icon:SetTexture("Interface/Minimap/MinimapArrow")
+  -- Inner half-size arrow: in-range but not facing (caster/hunter)
+  local inner = playerdot1:CreateTexture(nil, "OVERLAY")
+  inner:SetTexture(textures.out_range)
+  inner:Hide()
+  playerdot1.inner = inner
 
   targetdot1 = DotPool:GetDot()
   -- targetdot1.ring:Hide()
@@ -622,6 +636,7 @@ end
 
 function crfFrame:PLAYER_ENTERING_WORLD()
   Check_Actions()
+  RefreshPlayerClass()
 
   -- Reset cached UI state
   lastColorState = nil
@@ -717,28 +732,74 @@ local function GetAngleBetweenPoints(x1, y1, x2, y2)
   return angle
 end
 
-local function IsUnitFacingUnit(playerX, playerY, playerFacing, targetX, targetY, maxAngle)
-  local angleToTarget = atan2(targetY - playerY, targetX - playerX)
+-- Absolute angle between unit facing and direction to target (radians).
+local function GetFacingDelta(unitX, unitY, unitFacing, targetX, targetY)
+  local angleToTarget = atan2(targetY - unitY, targetX - unitX)
   if angleToTarget < 0 then
     angleToTarget = angleToTarget + TWO_PI
   end
 
-  local angularDifference = mod(angleToTarget - playerFacing, TWO_PI)
+  local angularDifference = mod(angleToTarget - unitFacing, TWO_PI)
   if angularDifference > pi then
     angularDifference = angularDifference - TWO_PI
   elseif angularDifference < -pi then
     angularDifference = angularDifference + TWO_PI
   end
 
-  return abs(angularDifference) <= maxAngle
+  return abs(angularDifference)
+end
+
+local function IsUnitFacingUnit(playerX, playerY, playerFacing, targetX, targetY, maxAngle)
+  return GetFacingDelta(playerX, playerY, playerFacing, targetX, targetY) <= maxAngle
 end
 
 -- Precompute constant values outside the OnUpdate handler
-local CONSTANT_FACING_LIMIT = 61 * (pi / 180)  -- constant facing limit in radians
+-- Melee "good face" cone (narrow, for green/orange indicator)
+local MELEE_FACING_HALF = 61 * (pi / 180)
+-- Hunter / caster ranged: "in front of you" → ±90° (180° front hemisphere).
+-- Wider than melee 61° so hunter shots aren't flagged noface while they still land.
+-- (Vanilla tip cites a 118° firing arc; ±90° matches live "in front" checks.)
+local CASTER_FACING_HALF = 90 * (pi / 180)
+local HUNTER_FACING_HALF = 90 * (pi / 180)
+
 local HALF_PI = pi / 2
+-- Melee arrow fade (close fights)
 local ALPHA_FADE_START = 30
 local ALPHA_FADE_END = 50
 local ALPHA_FADE_RANGE = 1 / (ALPHA_FADE_END - 25)  -- 1/25
+-- Ranged: dense from min (~8 yd), then clear distance bands
+local RANGED_DENSE_UNTIL = 18   -- full brightness 8..18
+local RANGED_MID_UNTIL = 28     -- amber band
+local RANGED_FADE_END = 36      -- near max shot range
+
+-- Melee: old fade. Hunter ranged: dense near 8 yd, then fade. Other casters: full alpha.
+local function GetArrowAlpha(distance, isRanged)
+  if isRanged then
+    if not isHunter then return 1 end
+    if distance <= RANGED_DENSE_UNTIL then
+      return 1
+    elseif distance >= RANGED_FADE_END then
+      return 0.2
+    end
+    return 1 - (distance - RANGED_DENSE_UNTIL) / (RANGED_FADE_END - RANGED_DENSE_UNTIL) * 0.8
+  end
+  if distance < ALPHA_FADE_START then return 1 end
+  if distance > ALPHA_FADE_END then return 0 end
+  return 1 - (distance - 25) * ALPHA_FADE_RANGE
+end
+
+-- Hunter only: yellow → amber → orange by distance. Other casters: solid yellow.
+local function GetRangedColor(distance)
+  if not isHunter then
+    return "ranged", 1, 0.9, 0.1
+  end
+  if distance <= RANGED_DENSE_UNTIL then
+    return "ranged_close", 1, 0.95, 0.12
+  elseif distance <= RANGED_MID_UNTIL then
+    return "ranged_mid", 1, 0.7, 0.08
+  end
+  return "ranged_far", 1, 0.4, 0.05
+end
 
 local distance_change = 0
 local boss_markers = {}
@@ -769,6 +830,7 @@ function crfFrame_OnUpdate()
         end
       end
       playerdot1.icon:Hide()
+      if playerdot1.inner then playerdot1.inner:Hide() end
       was_disabled = true
     end
     return
@@ -847,7 +909,10 @@ function crfFrame_OnUpdate()
     local player_facing = UnitFacing("player")
     local target_facing = UnitFacing("target")
 
-    local is_facing = player_facing and IsUnitFacingUnit(px, py, player_facing, tx, ty, CONSTANT_FACING_LIMIT)
+    local facing_delta = player_facing and GetFacingDelta(px, py, player_facing, tx, ty) or pi
+    local is_facing_melee = facing_delta <= MELEE_FACING_HALF
+    local ranged_face_limit = isHunter and HUNTER_FACING_HALF or CASTER_FACING_HALF
+    local is_facing_ranged = facing_delta <= ranged_face_limit
     local is_behind = target_facing and not IsUnitFacingUnit(tx, ty, target_facing, px, py, HALF_PI)
 
     local _, _, _, pxPoint, pyPoint = playerdot1:GetPoint()
@@ -864,20 +929,29 @@ function crfFrame_OnUpdate()
     local angle1 = GetAngleBetweenPoints(pxPoint, pyPoint, txPoint, tyPoint) + (pi / 2)
     RotateTexture(playerdot1.icon, angle1)
 
-    local alpha = (obj_distance < ALPHA_FADE_START) and 1 or ((obj_distance > ALPHA_FADE_END) and 0 or (1 - (obj_distance - 25) * ALPHA_FADE_RANGE))
-
-    -- Colors: melee green/facing variants, caster ranged yellow, out of reach red
+    -- Colors by zone; facing flip only changes palette (no texture/size swap)
     local rangeState = GetRangeState(obj_distance)
     local newColorState, r, g, b
+    local alpha = GetArrowAlpha(obj_distance, rangeState == "ranged")
+    local showInner = false
+
     if rangeState == "melee" then
-      if settings.largearrow and lastTextureInRange ~= true then
-        playerdot1.icon:SetTexture(textures.in_range)
-        lastTextureInRange = true
+      -- One size for whole melee zone (largearrow texture if enabled)
+      if settings.largearrow then
+        if lastTextureInRange ~= true then
+          playerdot1.icon:SetTexture(textures.in_range)
+          lastTextureInRange = true
+        end
+      elseif lastTextureInRange ~= false then
+        playerdot1.icon:SetTexture(textures.out_range)
+        lastTextureInRange = false
       end
 
-      if not is_facing then
-        newColorState = "not_facing"
-        r, g, b = 1, 0.5, 0
+      if not is_facing_melee then
+        newColorState = "melee_noface"
+        r, g, b = 0.95, 0.1, 0.1
+        alpha = 1
+        showInner = true
       elseif is_behind then
         newColorState = "behind"
         r, g, b = 0.25, 0.75, 0.65
@@ -886,15 +960,23 @@ function crfFrame_OnUpdate()
         r, g, b = 0.1, 0.85, 0.15
       end
     elseif rangeState == "ranged" then
-      if settings.largearrow and lastTextureInRange ~= true then
-        playerdot1.icon:SetTexture(textures.in_range)
-        lastTextureInRange = true
+      -- One size for whole ranged zone (thin line); facing only recolors
+      if lastTextureInRange ~= false then
+        playerdot1.icon:SetTexture(textures.out_range)
+        lastTextureInRange = false
       end
-      newColorState = "ranged"
-      r, g, b = 1, 0.9, 0.1
+      if not is_facing_ranged then
+        newColorState = "ranged_noface"
+        r, g, b = 0.95, 0.1, 0.1
+        alpha = 1
+        showInner = true
+      else
+        newColorState, r, g, b = GetRangedColor(obj_distance)
+      end
     else
       newColorState = "out_range"
       r, g, b = 0.95, 0.1, 0.1
+      alpha = GetArrowAlpha(obj_distance, false)
       if lastTextureInRange ~= false then
         playerdot1.icon:SetTexture(textures.out_range)
         lastTextureInRange = false
@@ -911,9 +993,28 @@ function crfFrame_OnUpdate()
     playerdot1.icon:SetPoint("CENTER", UIParent, "CENTER", midX, midY)
     playerdot1:Show()
     if not playerdot1.icon:IsVisible() then playerdot1.icon:Show() end
+
+    if showInner and playerdot1.inner then
+      local half = distance * 0.5
+      -- Same texture family as outer so only color differs on turn
+      if lastTextureInRange then
+        playerdot1.inner:SetTexture(textures.in_range)
+      else
+        playerdot1.inner:SetTexture(textures.out_range)
+      end
+      playerdot1.inner:SetWidth(half)
+      playerdot1.inner:SetHeight(half)
+      playerdot1.inner:SetPoint("CENTER", UIParent, "CENTER", midX, midY)
+      RotateTexture(playerdot1.inner, angle1)
+      playerdot1.inner:SetVertexColor(1, 0.9, 0.1, 1)
+      playerdot1.inner:Show()
+    elseif playerdot1.inner then
+      playerdot1.inner:Hide()
+    end
   else
     targetdot1.icon:Hide()
     playerdot1.icon:Hide()
+    if playerdot1.inner then playerdot1.inner:Hide() end
   end
 end
 
