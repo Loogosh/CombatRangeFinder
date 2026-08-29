@@ -22,6 +22,10 @@ local abs                = math.abs
 local tan                = math.tan
 local floor              = math.floor
 
+-- Facing cones (defined early — used by DebugRange and OnUpdate)
+local MELEE_FACING_HALF = 61 * (pi / 180)
+local RANGED_FACING_HALF = 90 * (pi / 180)
+
 -- WoW API functions frequently used in loops or OnUpdate handlers
 local UnitXP             = UnitXP
 local GetTime            = GetTime
@@ -48,12 +52,36 @@ local getn               = getn            -- For WoW 1.12, using getn is common
 
 local settings
 local isHunter = false
+-- melee | ranged | hybrid (Hunter/Shaman/Druid/Paladin)
+local classMode = "hybrid"
 
 local function RefreshPlayerClass()
-  local className, classToken = UnitClass("player")
+  local _, classToken = UnitClass("player")
+  classToken = classToken or ""
+
   isHunter = classToken == "HUNTER"
-    or className == "Hunter"
-    or className == "Охотник"
+
+  if classToken == "MAGE" or classToken == "WARLOCK" or classToken == "PRIEST" then
+    classMode = "ranged"
+  elseif classToken == "WARRIOR" or classToken == "ROGUE" then
+    classMode = "melee"
+  else
+    classMode = "hybrid"
+  end
+end
+
+local function UsesOnlyRange()
+  if classMode == "ranged" then return true end
+  if classMode == "melee" then return false end
+  return settings.onlyrange
+end
+
+local function UsesOnlyMelee()
+  return classMode == "melee"
+end
+
+local function CanToggleOnlyRange()
+  return classMode == "hybrid"
 end
 
 if not (has_vanillautils and has_superwow) then
@@ -110,6 +138,40 @@ end
 function calculateDistance(x1,y1,z1,x2,y2,z2)
   local dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
   return sqrt(dx*dx + dy*dy + dz*dz)
+end
+
+function calculateDistance2D(x1, y1, x2, y2)
+  local dx, dy = x2 - x1, y2 - y1
+  return sqrt(dx * dx + dy * dy)
+end
+
+-- Absolute angle between unit facing and direction to target (radians).
+local function GetFacingDelta(unitX, unitY, unitFacing, targetX, targetY)
+  local angleToTarget = atan2(targetY - unitY, targetX - unitX)
+  if angleToTarget < 0 then
+    angleToTarget = angleToTarget + TWO_PI
+  end
+
+  local angularDifference = mod(angleToTarget - unitFacing, TWO_PI)
+  if angularDifference > pi then
+    angularDifference = angularDifference - TWO_PI
+  elseif angularDifference < -pi then
+    angularDifference = angularDifference + TWO_PI
+  end
+
+  return abs(angularDifference)
+end
+
+local function IsUnitFacingUnit(playerX, playerY, playerFacing, targetX, targetY, maxAngle)
+  return GetFacingDelta(playerX, playerY, playerFacing, targetX, targetY) <= maxAngle
+end
+
+local function GetAngleBetweenPoints(x1, y1, x2, y2)
+  local angle = atan2(x2 - x1, y2 - y1)
+  if angle < 0 then
+    return angle + TWO_PI
+  end
+  return angle
 end
 
 -- Create a pool for managing dots
@@ -289,10 +351,10 @@ local ranged = {
   ["Scorpid Sting"] = 1,
   ["Viper Sting"] = 1,
   ["Concussive Shot"] = 1,
-  ["Hunter's Mark"] = 1,
   ["Scatter Shot"] = 1,
   ["Tranquilizing Shot"] = 1,
   ["Wyvern Sting"] = 1,
+  -- Hunter's Mark omitted: ~100yd range breaks distance check
 
   -- Mage
   ["Fireball"] = 1,
@@ -354,35 +416,87 @@ local ranged = {
 -- melee / ranged action slots for IsActionInRange
 local melee_check_slot = nil
 local ranged_check_slot = nil
+local ranged_check_name = nil
+
+-- Hunter: prefer shot abilities over first bar match
+local hunter_ranged_priority = {
+  "Auto Shot", "Arcane Shot", "Aimed Shot", "Multi-Shot",
+  "Serpent Sting", "Scorpid Sting", "Viper Sting", "Concussive Shot",
+  "Scatter Shot", "Tranquilizing Shot", "Wyvern Sting",
+}
+
+local function GetSlotSpellName(slot)
+  local _, actionType, identifier = GetActionText(slot)
+  if actionType and identifier and actionType == "SPELL" then
+    return SpellInfo(identifier)
+  end
+end
 
 local function ScanSlotForRange(slot)
-  local name, actionType, identifier = GetActionText(slot)
-  if not (actionType and identifier and actionType == "SPELL") then return end
-  local spellName = SpellInfo(identifier)
+  local spellName = GetSlotSpellName(slot)
   if not spellName then return end
   if not melee_check_slot and instants[spellName] then
     melee_check_slot = slot
   end
   if not ranged_check_slot and ranged[spellName] then
     ranged_check_slot = slot
+    ranged_check_name = spellName
   end
+end
+
+local function FindHunterRangedSlot()
+  local found_slot, found_name
+  local found_pri = 999
+  for i = 1, 120 do
+    local spellName = GetSlotSpellName(i)
+    if spellName then
+      for pri, want in ipairs(hunter_ranged_priority) do
+        if spellName == want and pri < found_pri then
+          found_pri = pri
+          found_slot = i
+          found_name = spellName
+        end
+      end
+    end
+  end
+  return found_slot, found_name
 end
 
 local function Check_Actions(slot)
   if slot then
-    -- slot changed: if it was our check slot, rescan; else maybe adopt new spell
     if slot == melee_check_slot then melee_check_slot = nil end
-    if slot == ranged_check_slot then ranged_check_slot = nil end
+    if slot == ranged_check_slot then
+      ranged_check_slot = nil
+      ranged_check_name = nil
+    end
     ScanSlotForRange(slot)
-    if melee_check_slot and ranged_check_slot then return end
+    if melee_check_slot and ranged_check_slot then
+      if isHunter then
+        local hs, hn = FindHunterRangedSlot()
+        if hs then
+          ranged_check_slot = hs
+          ranged_check_name = hn
+        end
+      end
+      return
+    end
   else
     melee_check_slot = nil
     ranged_check_slot = nil
+    ranged_check_name = nil
   end
 
   for i = 1, 120 do
     ScanSlotForRange(i)
-    if melee_check_slot and ranged_check_slot then return end
+    if melee_check_slot and ranged_check_slot and not isHunter then return end
+  end
+
+  if isHunter then
+    local hs, hn = FindHunterRangedSlot()
+    if hs then
+      ranged_check_slot = hs
+      ranged_check_name = hn
+    end
   end
 end
 
@@ -418,6 +532,7 @@ local commands = {
   { name = "markers",     default = true,  desc = "Show raid markers at enemy feet" },
   { name = "markerssize", default = 48,    desc = "Size of markers (default 48)" },
   { name = "largearrow",  default = true,  desc = "Use a larger arrow for enemies who are in range" },
+  { name = "onlyrange",   default = false, desc = "Ranged line only, no melee zone (Hunter/Shaman/Druid/Paladin)" },
 }
 
 local function OffOn(on)
@@ -427,9 +542,19 @@ end
 --Display commands
 local function ShowCommands()
   crf_print("|cff77ff00Combat Range Finder:|r")
+  if classMode == "ranged" then
+    crf_print("class mode - |cff00ccccranged only|r (Mage/Warlock/Priest)")
+  elseif classMode == "melee" then
+    crf_print("class mode - |cff00ccccmelee only|r (Warrior/Rogue)")
+  else
+    crf_print("class mode - |cff00cccchybrid|r (melee + ranged, or /crf onlyrange)")
+  end
   for _,data in ipairs(commands) do
-    if type(data.default) == "boolean" then
-      crf_print(data.name .. " - " .. OffOn(settings[data.name]) .. " - " .. data.desc)
+    if data.name == "onlyrange" and not CanToggleOnlyRange() then
+      -- skip: not applicable for this class
+    elseif type(data.default) == "boolean" then
+      local val = data.name == "onlyrange" and UsesOnlyRange() or settings[data.name]
+      crf_print(data.name .. " - " .. OffOn(val) .. " - " .. data.desc)
     else
       crf_print(data.name .. " - |cff00cccc" .. settings[data.name] .. "|r - " .. data.desc)
     end
@@ -444,12 +569,26 @@ function MakeSlash()
     end
     local cmd = string.lower(args[1] or "")
     local num = tonumber(args[2])
+
+    if cmd == "debug" then
+      crfFrame:DebugRange()
+      return
+    end
     
     for _,data in ipairs(commands) do
       if cmd == data.name then
+        if data.name == "onlyrange" and not CanToggleOnlyRange() then
+          if classMode == "ranged" then
+            crf_print("|cff77ff00CRF:|r onlyrange always on for casters")
+          else
+            crf_print("|cff77ff00CRF:|r onlyrange N/A — melee class")
+          end
+          return
+        end
         if type(data.default) == "boolean" then
           settings[data.name] = not settings[data.name]
-          crf_print("|cff77ff00CRF:|r " .. data.name .. " - " .. OffOn(settings[data.name]))
+          local shown = data.name == "onlyrange" and UsesOnlyRange() or settings[data.name]
+          crf_print("|cff77ff00CRF:|r " .. data.name .. " - " .. OffOn(shown))
         elseif num then
           settings[data.name] = num
           crf_print("|cff77ff00CRF:|r " .. data.name .. " - |cff00cccc" .. num .. "|r")
@@ -618,25 +757,61 @@ end
 -- Returns: "melee" | "ranged" | nil (out of reach)
 local function GetRangeState(distance)
   local canAttack = UnitCanAttack("player", "target")
+  local onlyRange = UsesOnlyRange()
+  local onlyMelee = UsesOnlyMelee()
 
-  if melee_check_slot and canAttack then
-    if IsActionInRange(melee_check_slot) == 1 then
+  if not onlyRange then
+    if melee_check_slot and canAttack then
+      if IsActionInRange(melee_check_slot) == 1 then
+        return "melee"
+      end
+    elseif distance <= GetPlayerMeleeRange() then
       return "melee"
     end
-  elseif distance <= GetPlayerMeleeRange() then
-    return "melee"
   end
 
-  if ranged_check_slot and canAttack and IsActionInRange(ranged_check_slot) == 1 then
-    return "ranged"
+  if not onlyMelee then
+    if ranged_check_slot and canAttack and IsActionInRange(ranged_check_slot) == 1 then
+      return "ranged"
+    end
   end
 
   return nil
 end
 
+function crfFrame:DebugRange()
+  if not UnitExists("target") then
+    crf_print("|cff77ff00CRF:|r no target")
+    return
+  end
+  local px, py, pz = UnitPosition("player")
+  local tx, ty, tz = UnitPosition("target")
+  if not tx then
+    crf_print("|cff77ff00CRF:|r no target position")
+    return
+  end
+  local dist3d = calculateDistance(px, py, pz, tx, ty, tz)
+  local dist2d = calculateDistance2D(px, py, tx, ty)
+  local state = GetRangeState(dist3d)
+  local iar = ranged_check_slot and IsActionInRange(ranged_check_slot) or "n/a"
+  local pf = UnitFacing("player")
+  local fd = pf and GetFacingDelta(px, py, pf, tx, ty) or nil
+  local fd_deg = fd and floor(fd * 180 / pi + 0.5) or "?"
+  local face_limit = (state == "ranged") and RANGED_FACING_HALF or MELEE_FACING_HALF
+  local face_limit_deg = (state == "ranged") and 90 or 61
+  local facing_ok = fd and (fd <= face_limit) or false
+  crf_print(string.format(
+    "|cff77ff00CRF:|r dist2d |cffffff00%.1f|r | dist3d |cffffff00%.1f|r yd | state |cffffff00%s|r | spell |cffffff00%s|r | InRange |cffffff00%s|r | face |cffffff00%s|r/%d deg | facing |cffffff00%s|r | mode |cffffff00%s|r",
+    dist2d, dist3d, state or "out", ranged_check_name or "none", tostring(iar), tostring(fd_deg), face_limit_deg, facing_ok and "ok" or "no", classMode
+  ))
+  if CanToggleOnlyRange() then
+    crf_print("|cff77ff00CRF:|r onlyrange " .. OffOn(UsesOnlyRange()))
+  end
+end
+
 function crfFrame:PLAYER_ENTERING_WORLD()
-  Check_Actions()
   RefreshPlayerClass()
+  Check_Actions()
 
   -- Reset cached UI state
   lastColorState = nil
@@ -724,44 +899,7 @@ function crfFrame:ShowArrow()
     and not UnitIsDead("target")
 end
 
-local function GetAngleBetweenPoints(x1, y1, x2, y2)
-  local angle = atan2(x2 - x1, y2 - y1)
-  if angle < 0 then
-    return angle + TWO_PI
-  end
-  return angle
-end
-
--- Absolute angle between unit facing and direction to target (radians).
-local function GetFacingDelta(unitX, unitY, unitFacing, targetX, targetY)
-  local angleToTarget = atan2(targetY - unitY, targetX - unitX)
-  if angleToTarget < 0 then
-    angleToTarget = angleToTarget + TWO_PI
-  end
-
-  local angularDifference = mod(angleToTarget - unitFacing, TWO_PI)
-  if angularDifference > pi then
-    angularDifference = angularDifference - TWO_PI
-  elseif angularDifference < -pi then
-    angularDifference = angularDifference + TWO_PI
-  end
-
-  return abs(angularDifference)
-end
-
-local function IsUnitFacingUnit(playerX, playerY, playerFacing, targetX, targetY, maxAngle)
-  return GetFacingDelta(playerX, playerY, playerFacing, targetX, targetY) <= maxAngle
-end
-
 -- Precompute constant values outside the OnUpdate handler
--- Melee "good face" cone (narrow, for green/orange indicator)
-local MELEE_FACING_HALF = 61 * (pi / 180)
--- Hunter / caster ranged: "in front of you" → ±90° (180° front hemisphere).
--- Wider than melee 61° so hunter shots aren't flagged noface while they still land.
--- (Vanilla tip cites a 118° firing arc; ±90° matches live "in front" checks.)
-local CASTER_FACING_HALF = 90 * (pi / 180)
-local HUNTER_FACING_HALF = 90 * (pi / 180)
-
 local HALF_PI = pi / 2
 -- Melee arrow fade (close fights)
 local ALPHA_FADE_START = 30
@@ -906,13 +1044,14 @@ function crfFrame_OnUpdate()
   -- Arrow update block using cached values
   if crf:ShowArrow() and tx then
     local obj_distance = calculateDistance(px, py, pz, tx, ty, tz)
+    local obj_distance2d = calculateDistance2D(px, py, tx, ty)
+    local hunter_dist = obj_distance2d
     local player_facing = UnitFacing("player")
     local target_facing = UnitFacing("target")
 
     local facing_delta = player_facing and GetFacingDelta(px, py, player_facing, tx, ty) or pi
     local is_facing_melee = facing_delta <= MELEE_FACING_HALF
-    local ranged_face_limit = isHunter and HUNTER_FACING_HALF or CASTER_FACING_HALF
-    local is_facing_ranged = facing_delta <= ranged_face_limit
+    local is_facing_ranged = facing_delta <= RANGED_FACING_HALF
     local is_behind = target_facing and not IsUnitFacingUnit(tx, ty, target_facing, px, py, HALF_PI)
 
     local _, _, _, pxPoint, pyPoint = playerdot1:GetPoint()
@@ -932,7 +1071,8 @@ function crfFrame_OnUpdate()
     -- Colors by zone; facing flip only changes palette (no texture/size swap)
     local rangeState = GetRangeState(obj_distance)
     local newColorState, r, g, b
-    local alpha = GetArrowAlpha(obj_distance, rangeState == "ranged")
+    local dist_for_bands = isHunter and hunter_dist or obj_distance
+    local alpha = GetArrowAlpha(dist_for_bands, rangeState == "ranged")
     local showInner = false
 
     if rangeState == "melee" then
@@ -971,7 +1111,7 @@ function crfFrame_OnUpdate()
         alpha = 1
         showInner = true
       else
-        newColorState, r, g, b = GetRangedColor(obj_distance)
+        newColorState, r, g, b = GetRangedColor(dist_for_bands)
       end
     else
       newColorState = "out_range"

@@ -2,8 +2,9 @@
 ## Title: Combat Range Finder
 ## Notes: Indicators for melee and caster spell range
 ## Author: Weird Vibes
+## X-Contributor: Loogosh
 ## SavedVariablesPerCharacter: CRFDB
-## Version: 1.3.1
+## Version: 1.3.5
 # OptionalDeps: SuperAPI, pfUI
 
 CombatRangeFinder.lua
