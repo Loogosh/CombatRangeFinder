@@ -1,4 +1,4 @@
-# Combat Range Finder 1.3.7
+# Combat Range Finder 1.3.8
 
 Indicators for melee and ranged combat (Turtle WoW / Vanilla 1.12).
 
@@ -70,6 +70,10 @@ Hunter ranged check uses **Auto Shot** priority (not Hunter's Mark). In/out of r
 
 ## Changelog
 
+### 1.3.8
+* Fix arrow/markers dying after zone change: `PLAYER_LEAVING_WORLD` no longer removes `OnUpdate` (only `PLAYER_LOGOUT` does)
+* Refresh screen/camera projection on `PLAYER_ENTERING_WORLD`
+
 ### 1.3.7
 * LoS check in melee zone (red + yellow when blocked)
 
@@ -111,4 +115,4 @@ Hunter ranged check uses **Auto Shot** priority (not Hunter's Mark). In/out of r
 ---
 
 * Original: [MarcelineVQ/CombatRangeFinder](https://github.com/MarcelineVQ/CombatRangeFinder) by Weird Vibes (Turtle WoW)  
-* Fork & enhancements: [Loogosh/CombatRangeFinder](https://github.com/Loogosh/CombatRangeFinder) — v1.3.7+
+* Fork & enhancements: [Loogosh/CombatRangeFinder](https://github.com/Loogosh/CombatRangeFinder) — v1.3.8+

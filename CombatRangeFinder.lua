@@ -508,13 +508,16 @@ local function Check_Actions(slot)
 end
 
 crfFrame:SetScript("OnEvent", function ()
-  -- Handle shutdown to prevent SuperWoW API crashes during logout
-  if event == "PLAYER_LOGOUT" or event == "PLAYER_LEAVING_WORLD" then
+  -- Pause API during loading screen; full teardown only on logout
+  if event == "PLAYER_LEAVING_WORLD" then
+    crf_isShuttingDown = true
+    return
+  end
+  if event == "PLAYER_LOGOUT" then
     crf_isShuttingDown = true
     this:UnregisterAllEvents()
     this:SetScript("OnUpdate", nil)
     this:SetScript("OnEvent", nil)
-    -- Hide all dots
     for i = 1, getn(DotPool) do
       if DotPool[i] then
         DotPool[i]:Hide()
@@ -818,8 +821,10 @@ function crfFrame:DebugRange()
 end
 
 function crfFrame:PLAYER_ENTERING_WORLD()
+  crf_isShuttingDown = false
   RefreshPlayerClass()
   Check_Actions()
+  RefreshProjectionParams()
 
   -- Reset cached UI state
   lastColorState = nil
@@ -860,18 +865,23 @@ function ScaleFOV(fov)
   end
 end
 
--- Projection parameters (pre-computed to avoid per-frame math)
-local screenWidth = GetScreenWidth()
-local screenHeight = GetScreenHeight()
-local aspectRatio = screenWidth / screenHeight
+-- Projection parameters (refreshed on zone load and at startup)
+local screenWidth, screenHeight, aspectRatio
+local projX, projY
 
-local c_fov = UnitXP("cameraFoV")
-FOV = ScaleFOV(c_fov)
-fovScale = tan(FOV / 2)
-local invFovScale = 1 / fovScale
--- Combined projection multipliers (invFovScale * halfScreen)
-local projX = invFovScale * screenWidth * 0.5
-local projY = aspectRatio * invFovScale * screenHeight * 0.5
+function RefreshProjectionParams()
+  screenWidth = GetScreenWidth()
+  screenHeight = GetScreenHeight()
+  aspectRatio = screenWidth / screenHeight
+  local c_fov = UnitXP("cameraFoV")
+  FOV = ScaleFOV(c_fov)
+  fovScale = tan(FOV / 2)
+  local invFovScale = 1 / fovScale
+  projX = invFovScale * screenWidth * 0.5
+  projY = aspectRatio * invFovScale * screenHeight * 0.5
+end
+
+RefreshProjectionParams()
 
 crfFrame.camera_data = { sinPitch = 0, cosPitch = 0, yaw = 0, sinYaw = 0, cosYaw = 0, x = 0, y = 0, z = 0 }
 
