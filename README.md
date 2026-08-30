@@ -1,4 +1,4 @@
-# Combat Range Finder 1.3.5
+# Combat Range Finder 1.3.7
 
 Indicators for melee and ranged combat (Turtle WoW / Vanilla 1.12).
 
@@ -17,7 +17,7 @@ Requires [SuperWoW.dll](https://github.com/balakethelock/SuperWoW) and `VanillaU
 |-------|---------|
 | **Green** | Melee range, facing target |
 | **Teal** | Melee range, behind target (backstab position) |
-| **Red + yellow inner** | In range but wrong facing (melee or caster) |
+| **Red + yellow inner** | In range but wrong facing, or obstacle blocks LoS |
 | **Yellow** | Ranged / spell in range (casters) |
 | **Yellow → amber → orange** | Hunter in shot range, by distance (8–18 / 18–28 / 28–36 yd) |
 | **Red** | Out of range |
@@ -61,6 +61,7 @@ Hunter ranged check uses **Auto Shot** priority (not Hunter's Mark). In/out of r
 
 * Real melee range (action bar or ~5 yd)
 * Ranged / spell range for casters and hunters
+* Line of sight check (`UnitXP("inSight")`) — melee and ranged; obstacle → red + yellow inner
 * Facing: melee **±61°**; ranged **±90°** (hunter and casters)
 * Behind-target hint for melee dogpiles
 * Raid markers on large mobs
@@ -68,6 +69,13 @@ Hunter ranged check uses **Auto Shot** priority (not Hunter's Mark). In/out of r
 ---
 
 ## Changelog
+
+### 1.3.7
+* LoS check in melee zone (red + yellow when blocked)
+
+### 1.3.6
+* Ranged LoS check via `UnitXP("inSight")` — in range but tree/wall → red + yellow inner
+* `/crf debug` shows `los ok/blocked`
 
 ### 1.3.5
 * Fix `/crf debug` crash (`FACING_HALF` nil — constants moved to top of file)
@@ -103,4 +111,4 @@ Hunter ranged check uses **Auto Shot** priority (not Hunter's Mark). In/out of r
 ---
 
 * Original: [MarcelineVQ/CombatRangeFinder](https://github.com/MarcelineVQ/CombatRangeFinder) by Weird Vibes (Turtle WoW)  
-* Fork & enhancements: [Loogosh/CombatRangeFinder](https://github.com/Loogosh/CombatRangeFinder) — v1.3.5+
+* Fork & enhancements: [Loogosh/CombatRangeFinder](https://github.com/Loogosh/CombatRangeFinder) — v1.3.7+

@@ -174,6 +174,13 @@ local function GetAngleBetweenPoints(x1, y1, x2, y2)
   return angle
 end
 
+-- Line of sight via UnitXP (tree/wall between units)
+local function UnitInLineOfSight(unit1, unit2)
+  local ok, inSight = pcall(UnitXP, "inSight", unit1, unit2)
+  if ok then return inSight end
+  return true
+end
+
 -- Create a pool for managing dots
 local DotPool = {}
 
@@ -800,9 +807,10 @@ function crfFrame:DebugRange()
   local face_limit = (state == "ranged") and RANGED_FACING_HALF or MELEE_FACING_HALF
   local face_limit_deg = (state == "ranged") and 90 or 61
   local facing_ok = fd and (fd <= face_limit) or false
+  local in_los = UnitInLineOfSight("player", "target")
   crf_print(string.format(
-    "|cff77ff00CRF:|r dist2d |cffffff00%.1f|r | dist3d |cffffff00%.1f|r yd | state |cffffff00%s|r | spell |cffffff00%s|r | InRange |cffffff00%s|r | face |cffffff00%s|r/%d deg | facing |cffffff00%s|r | mode |cffffff00%s|r",
-    dist2d, dist3d, state or "out", ranged_check_name or "none", tostring(iar), tostring(fd_deg), face_limit_deg, facing_ok and "ok" or "no", classMode
+    "|cff77ff00CRF:|r dist2d |cffffff00%.1f|r | dist3d |cffffff00%.1f|r yd | state |cffffff00%s|r | spell |cffffff00%s|r | InRange |cffffff00%s|r | face |cffffff00%s|r/%d deg | facing |cffffff00%s|r | los |cffffff00%s|r | mode |cffffff00%s|r",
+    dist2d, dist3d, state or "out", ranged_check_name or "none", tostring(iar), tostring(fd_deg), face_limit_deg, facing_ok and "ok" or "no", in_los and "ok" or "blocked", classMode
   ))
   if CanToggleOnlyRange() then
     crf_print("|cff77ff00CRF:|r onlyrange " .. OffOn(UsesOnlyRange()))
@@ -1052,6 +1060,7 @@ function crfFrame_OnUpdate()
     local facing_delta = player_facing and GetFacingDelta(px, py, player_facing, tx, ty) or pi
     local is_facing_melee = facing_delta <= MELEE_FACING_HALF
     local is_facing_ranged = facing_delta <= RANGED_FACING_HALF
+    local in_los = UnitInLineOfSight("player", "target")
     local is_behind = target_facing and not IsUnitFacingUnit(tx, ty, target_facing, px, py, HALF_PI)
 
     local _, _, _, pxPoint, pyPoint = playerdot1:GetPoint()
@@ -1087,8 +1096,8 @@ function crfFrame_OnUpdate()
         lastTextureInRange = false
       end
 
-      if not is_facing_melee then
-        newColorState = "melee_noface"
+      if not is_facing_melee or in_los == false then
+        newColorState = (in_los == false) and "melee_nolos" or "melee_noface"
         r, g, b = 0.95, 0.1, 0.1
         alpha = 1
         showInner = true
@@ -1105,8 +1114,8 @@ function crfFrame_OnUpdate()
         playerdot1.icon:SetTexture(textures.out_range)
         lastTextureInRange = false
       end
-      if not is_facing_ranged then
-        newColorState = "ranged_noface"
+      if not is_facing_ranged or in_los == false then
+        newColorState = (in_los == false) and "ranged_nolos" or "ranged_noface"
         r, g, b = 0.95, 0.1, 0.1
         alpha = 1
         showInner = true
